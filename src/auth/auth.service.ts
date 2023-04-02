@@ -3,10 +3,15 @@ import { PrismaService } from "src/prisma/prisma.service";
 import { AuthDto } from "./dto";
 import * as argon from "argon2";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime";
+import { JwtService } from "@nestjs/jwt";
+import { ConfigService } from "@nestjs/config";
 
 @Injectable()
-export class AuthService{
-    constructor(private prisma: PrismaService) {}
+export class AuthService {
+    constructor(private prisma: PrismaService
+        , private jwt: JwtService
+        , private config: ConfigService
+        ) { }
 
     async signin(dto: AuthDto) {
         const user = await this.prisma.user.findUnique(
@@ -20,39 +25,49 @@ export class AuthService{
         if (!user) throw new ForbiddenException(
             'Credentials incorrect'
         )
-        
+
         const pwMatches = await argon.verify(user.hash, dto.password)
         if (!pwMatches) throw new ForbiddenException(
             'Credentials incorrect'
         )
-
-        delete user.hash
-        return user
+        return this.signToken(user.id, user.email)
     }
 
     async signup(dto: AuthDto) {
         try {
+            //gen pass hash
+            const hash = await argon.hash(dto.password)
 
+            //save new user to db
+            const user = await this.prisma.user.create({
+                data: {
+                    email: dto.email,
+                    hash
+                }
+            })
+
+            delete user.hash
+            return user
         } catch (error) {
-            if (error instanceof PrismaClientKnownRequestError 
+            if (error instanceof PrismaClientKnownRequestError
                 && error.code === 'P2002')
-                throw new ForbiddenException (
+                throw new ForbiddenException(
                     'Credentials taken'
                 )
             throw error
         }
-        //gen pass hash
-        const hash = await argon.hash(dto.password)
+    }
 
-        //save new user to db
-        const user = await this.prisma.user.create({
-            data: {
-                email: dto.email,
-                hash
-            }
-        })
+    async signToken(userId: number, email: string): Promise<{access_token: string}> {
+        return {
+            access_token: await this.jwt.signAsync({
+                sub: userId,
+                email
+            }, {
+                expiresIn: '15m',
+                secret: this.config.get("JWT_SECRET")
+            })
+        }
 
-        delete user.hash
-        return user
     }
 }
